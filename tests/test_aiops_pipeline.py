@@ -42,6 +42,36 @@ def test_anomalous_record_is_detected():
     assert event["type"] == "ANOMALY"
 
 
+def test_detector_reports_all_anomaly_reasons():
+    detector = AnomalyDetector()
+    record = {
+        "timestamp": "2026-09-20T10:06:00",
+        "service": "payment-service",
+        "response_time_ms": 501,
+        "cpu_percent": 81,
+        "memory_percent": 81,
+        "log_level": "WARNING",
+        "message": "Service is under pressure"
+    }
+
+    event = detector.detect(record)
+
+    assert event["reasons"] == [
+        "High response time",
+        "High CPU utilization",
+        "High memory utilization",
+        "Error log detected"
+    ]
+
+
+def test_producer_rejects_empty_event():
+    topic = EventTopic("anomaly-events")
+    producer = EventProducer(topic)
+
+    assert producer.publish(None) is False
+    assert topic.get_messages() == []
+
+
 def test_producer_publishes_event():
     topic = EventTopic("anomaly-events")
     producer = EventProducer(topic)
@@ -70,3 +100,47 @@ def test_consumer_receives_event():
     messages = consumer.consume()
 
     assert len(messages) == 1
+
+
+def test_topic_clear_removes_messages():
+    topic = EventTopic("anomaly-events")
+    topic.publish({"type": "ANOMALY"})
+
+    topic.clear()
+
+    assert topic.get_messages() == []
+
+
+def test_pipeline_processes_service_data():
+    result = run_pipeline("data/service_data.json")
+
+    assert result["records_processed"] == 10
+    assert len(result["anomalies_detected"]) == 2
+    assert result["events_consumed"] == []
+
+
+def test_pipeline_script_prints_detected_event(capsys, monkeypatch):
+    import runpy
+    import event_consumer
+
+    class FakeConsumer:
+        def __init__(self, topic):
+            self.topic = topic
+
+        def consume(self):
+            return [{
+                "service": "payment-service",
+                "timestamp": "2026-09-20T10:06:00",
+                "type": "ANOMALY",
+                "reasons": ["High response time"]
+            }]
+
+    monkeypatch.setattr(event_consumer, "EventConsumer", FakeConsumer)
+
+    runpy.run_module("src.aiops_pipeline", run_name="__main__")
+
+    output = capsys.readouterr().out
+    assert "AIOps Pipeline Result" in output
+    assert "Records processed: 10" in output
+    assert "Service: payment-service" in output
+    assert "Reasons: High response time" in output
